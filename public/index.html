@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tank Trouble Multiplayer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #333;
+            font-family: Arial, sans-serif;
+        }
+        
+        #game-container {
+            position: relative;
+            width: 800px;
+            height: 600px;
+            background-color: #222;
+            overflow: hidden;
+        }
+        
+        #game-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            background-color: #333;
+        }
+        
+        #start-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            z-index: 10;
+        }
+        
+        #start-screen h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            color: #ffcc00;
+        }
+        
+        #player-name {
+            padding: 10px;
+            font-size: 18px;
+            margin-bottom: 20px;
+            width: 200px;
+            text-align: center;
+        }
+        
+        #start-button {
+            padding: 10px 20px;
+            font-size: 24px;
+            background-color: #ffcc00;
+            color: #333;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        
+        #start-button:hover {
+            background-color: #ffdd33;
+        }
+        
+        #score-display {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 18px;
+            z-index: 5;
+        }
+        
+        #player-count {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-size: 18px;
+            z-index: 5;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="game-canvas" width="800" height="600"></canvas>
+        <div id="score-display">Scores: </div>
+        <div id="player-count">Players: 0</div>
+        <div id="start-screen">
+            <h1>Tank Trouble</h1>
+            <input type="text" id="player-name" placeholder="Enter your name">
+            <button id="start-button">Join Game</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const canvas = document.getElementById('game-canvas');
+            const ctx = canvas.getContext('2d');
+            const startScreen = document.getElementById('start-screen');
+            const startButton = document.getElementById('start-button');
+            const playerNameInput = document.getElementById('player-name');
+            const scoreDisplay = document.getElementById('score-display');
+            const playerCountDisplay = document.getElementById('player-count');
+            const gameWidth = canvas.width;
+            const gameHeight = canvas.height;
+            
+            let socket;
+            let playerId;
+            let playerName = '';
+            let gameState = {
+                tanks: {},
+                bullets: [],
+                walls: []
+            };
+            let gameActive = false;
+            
+            // Controls
+            const keys = {
+                'w': false,
+                's': false,
+                'a': false,
+                'd': false,
+                ' ': false,
+                'ArrowUp': false,
+                'ArrowDown': false,
+                'ArrowLeft': false,
+                'ArrowRight': false,
+                'Enter': false
+            };
+            
+            // Draw tank
+            function drawTank(tank) {
+                ctx.save();
+                ctx.translate(tank.x, tank.y);
+                ctx.rotate(tank.angle);
+                
+                // Draw tank body
+                ctx.fillStyle = tank.color;
+                ctx.fillRect(-tank.width / 2, -tank.height / 2, tank.width, tank.height);
+                
+                // Draw tank turret
+                ctx.fillRect(-tank.width / 6, -tank.height / 2 - tank.height / 4, tank.width / 3, tank.height / 4);
+                
+                // Draw player name
+                ctx.fillStyle = 'white';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(tank.name || 'Player', 0, tank.height);
+                
+                ctx.restore();
+            }
+            
+            // Draw bullet
+            function drawBullet(bullet) {
+                ctx.beginPath();
+                ctx.arc(bullet.x, bullet.y, 3, 0, Math.PI * 2);
+                ctx.fillStyle = bullet.color;
+                ctx.fill();
+            }
+            
+            // Draw walls
+            function drawWalls() {
+                ctx.fillStyle = '#555';
+                for (const wall of gameState.walls) {
+                    ctx.fillRect(wall.x, wall.y, wall.width, wall.height);
+                }
+            }
+            
+            // Update score display
+            function updateScoreDisplay() {
+                let scoreText = 'Scores: ';
+                for (const [id, tank] of Object.entries(gameState.tanks)) {
+                    scoreText += `${tank.name || 'Player'}: ${tank.score} | `;
+                }
+                scoreDisplay.textContent = scoreText.slice(0, -3);
+                playerCountDisplay.textContent = `Players: ${Object.keys(gameState.tanks).length}`;
+            }
+            
+            // Game loop
+            function gameLoop() {
+                if (!gameActive) return;
+                
+                // Clear canvas
+                ctx.clearRect(0, 0, gameWidth, gameHeight);
+                
+                // Draw walls
+                drawWalls();
+                
+                // Draw tanks
+                for (const tank of Object.values(gameState.tanks)) {
+                    drawTank(tank);
+                }
+                
+                // Draw bullets
+                for (const bullet of gameState.bullets) {
+                    drawBullet(bullet);
+                }
+                
+                requestAnimationFrame(gameLoop);
+            }
+            
+            // Connect to server
+            function connectToServer() {
+                socket = io();
+                
+                socket.on('connect', () => {
+                    console.log('Connected to server');
+                });
+                
+                socket.on('gameInit', (data) => {
+                    playerId = data.id;
+                    gameState = data.gameState;
+                    gameState.tanks[playerId].name = playerName;
+                    
+                    // Send player name to server
+                    socket.emit('setPlayerName', { name: playerName });
+                    
+                    startScreen.style.display = 'none';
+                    gameActive = true;
+                    gameLoop();
+                    updateScoreDisplay();
+                });
+                
+                socket.on('playerJoined', (data) => {
+                    gameState.tanks[data.id] = data.tank;
+                    updateScoreDisplay();
+                });
+                
+                socket.on('playerLeft', (data) => {
+                    delete gameState.tanks[data.id];
+                    updateScoreDisplay();
+                });
+                
+                socket.on('gameUpdate', (data) => {
+                    gameState = data;
+                    updateScoreDisplay();
+                });
+                
+                // Set up input event listeners
+                window.addEventListener('keydown', (e) => {
+                    if (keys.hasOwnProperty(e.key)) {
+                        keys[e.key] = true;
+                        e.preventDefault();
+                        sendPlayerInput();
+                    }
+                });
+                
+                window.addEventListener('keyup', (e) => {
+                    if (keys.hasOwnProperty(e.key)) {
+                        keys[e.key] = false;
+                        e.preventDefault();
+                        sendPlayerInput();
+                    }
+                });
+            }
+            
+            // Send player input to server
+            function sendPlayerInput() {
+                if (!socket || !gameActive) return;
+                
+                const inputs = {
+                    up: keys['w'] || keys['ArrowUp'],
+                    down: keys['s'] || keys['ArrowDown'],
+                    left: keys['a'] || keys['ArrowLeft'],
+                    right: keys['d'] || keys['ArrowRight'],
+                    fire: keys[' '] || keys['Enter']
+                };
+                
+                socket.emit('playerInput', inputs);
+            }
+            
+            // Start game
+            startButton.addEventListener('click', function() {
+                playerName = playerNameInput.value.trim() || 'Player';
+                connectToServer();
+            });
+            
+            // Allow pressing Enter to start game
+            playerNameInput.addEventListener('keyup', function(e) {
+                if (e.key === 'Enter') {
+                    startButton.click();
+                }
+            });
+        });
+    </script>
+</body>
+</html>
