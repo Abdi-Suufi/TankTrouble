@@ -68,6 +68,7 @@
             border: none;
             border-radius: 5px;
             cursor: pointer;
+            margin-top: 20px;
         }
         
         #start-button:hover {
@@ -91,6 +92,29 @@
             font-size: 18px;
             z-index: 5;
         }
+        
+        .color-selection {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-top: 20px;
+            width: 80%;
+            max-width: 400px;
+        }
+        
+        .color-option {
+            width: 30px;
+            height: 30px;
+            margin: 5px;
+            border: 2px solid #333;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        
+        .color-option.selected {
+            border: 2px solid white;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+        }
     </style>
 </head>
 <body>
@@ -101,6 +125,9 @@
         <div id="start-screen">
             <h1>Tank Trouble</h1>
             <input type="text" id="player-name" placeholder="Enter your name">
+            <div id="color-selection" class="color-selection">
+                <!-- Color options will be added dynamically -->
+            </div>
             <button id="start-button">Join Game</button>
         </div>
     </div>
@@ -113,6 +140,7 @@
             const startScreen = document.getElementById('start-screen');
             const startButton = document.getElementById('start-button');
             const playerNameInput = document.getElementById('player-name');
+            const colorSelection = document.getElementById('color-selection');
             const scoreDisplay = document.getElementById('score-display');
             const playerCountDisplay = document.getElementById('player-count');
             const gameWidth = canvas.width;
@@ -121,12 +149,47 @@
             let socket;
             let playerId;
             let playerName = '';
+            let selectedColor = '';
             let gameState = {
                 tanks: {},
                 bullets: [],
                 walls: []
             };
             let gameActive = false;
+            
+            // Connect to server initially just to get available colors
+            socket = io();
+            
+            // Get available colors from server
+            socket.on('availableColors', (colors) => {
+                // Create color options
+                colors.forEach(color => {
+                    const colorOption = document.createElement('div');
+                    colorOption.className = 'color-option';
+                    colorOption.style.backgroundColor = color;
+                    colorOption.addEventListener('click', () => {
+                        // Remove selected class from all options
+                        document.querySelectorAll('.color-option').forEach(option => {
+                            option.classList.remove('selected');
+                        });
+                        
+                        // Add selected class to clicked option
+                        colorOption.classList.add('selected');
+                        selectedColor = color;
+                    });
+                    
+                    colorSelection.appendChild(colorOption);
+                });
+                
+                // Select first color by default
+                if (colors.length > 0) {
+                    const firstOption = document.querySelector('.color-option');
+                    if (firstOption) {
+                        firstOption.classList.add('selected');
+                        selectedColor = colors[0];
+                    }
+                }
+            });
             
             // Controls
             const keys = {
@@ -155,13 +218,14 @@
                 // Draw tank turret
                 ctx.fillRect(-tank.width / 6, -tank.height / 2 - tank.height / 4, tank.width / 3, tank.height / 4);
                 
-                // Draw player name
-                ctx.fillStyle = 'white';
-                ctx.font = '12px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText(tank.name || 'Player', 0, tank.height);
+                // Draw player name (properly positioned and oriented)
+                ctx.restore(); // Restore before drawing text to avoid rotation
                 
-                ctx.restore();
+                // Draw name above tank
+                ctx.fillStyle = 'white';
+                ctx.font = '14px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(tank.name || 'Player', tank.x, tank.y - tank.height);
             }
             
             // Draw bullet
@@ -200,14 +264,14 @@
                 // Draw walls
                 drawWalls();
                 
-                // Draw tanks
-                for (const tank of Object.values(gameState.tanks)) {
-                    drawTank(tank);
-                }
-                
                 // Draw bullets
                 for (const bullet of gameState.bullets) {
                     drawBullet(bullet);
+                }
+                
+                // Draw tanks
+                for (const tank of Object.values(gameState.tanks)) {
+                    drawTank(tank);
                 }
                 
                 requestAnimationFrame(gameLoop);
@@ -215,19 +279,15 @@
             
             // Connect to server
             function connectToServer() {
-                socket = io();
-                
-                socket.on('connect', () => {
-                    console.log('Connected to server');
+                // Send player join information with name and color
+                socket.emit('playerJoin', {
+                    name: playerName,
+                    color: selectedColor
                 });
                 
                 socket.on('gameInit', (data) => {
                     playerId = data.id;
                     gameState = data.gameState;
-                    gameState.tanks[playerId].name = playerName;
-                    
-                    // Send player name to server
-                    socket.emit('setPlayerName', { name: playerName });
                     
                     startScreen.style.display = 'none';
                     gameActive = true;
@@ -286,6 +346,15 @@
             // Start game
             startButton.addEventListener('click', function() {
                 playerName = playerNameInput.value.trim() || 'Player';
+                
+                if (!selectedColor) {
+                    // Default to first color if none selected
+                    const firstOption = document.querySelector('.color-option');
+                    if (firstOption) {
+                        selectedColor = firstOption.style.backgroundColor;
+                    }
+                }
+                
                 connectToServer();
             });
             

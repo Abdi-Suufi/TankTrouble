@@ -17,6 +17,9 @@ const gameState = {
   walls: []
 };
 
+// Available tank colors
+const availableColors = ['#ffcc00', '#3399ff', '#ff3366', '#33cc33', '#9933ff', '#ff6600', '#66ccff', '#cc66ff'];
+
 // Initialize walls
 function initializeWalls() {
   const gameWidth = 800;
@@ -58,6 +61,8 @@ const bulletSpeed = 5;
 const bulletRadius = 3;
 const bulletLifetime = 180;
 const bulletCooldown = 30;
+const bulletMaxBounces = 3; // Maximum number of bounces before bullet disappears
+const bulletOffset = bulletRadius + 2; // Offset to avoid bullet getting stuck in walls
 
 // Helper functions
 function canMoveToPosition(tank, newX, newY) {
@@ -86,22 +91,55 @@ function checkCollision(rect1, rect2) {
   );
 }
 
-function pointInRect(x, y, rect) {
-  return (
-    x >= rect.x &&
-    x <= rect.x + rect.width &&
-    y >= rect.y &&
-    y <= rect.y + rect.height
-  );
+// Improved collision detection for bullets using a circle vs rectangle
+function bulletCollidesWith(bullet, rect) {
+  // Find the closest point in the rectangle to the circle
+  const closestX = Math.max(rect.x, Math.min(bullet.x, rect.x + rect.width));
+  const closestY = Math.max(rect.y, Math.min(bullet.y, rect.y + rect.height));
+  
+  // Calculate distance between the circle's center and the closest point
+  const distX = bullet.x - closestX;
+  const distY = bullet.y - closestY;
+  
+  // If the distance is less than the circle's radius, there's a collision
+  return (distX * distX + distY * distY) <= (bulletRadius * bulletRadius);
+}
+
+// Improved wall collision detection for bullets
+function checkBulletWallCollision(bullet) {
+  for (const wall of gameState.walls) {
+    if (bulletCollidesWith(bullet, wall)) {
+      return wall;
+    }
+  }
+  return null;
+}
+
+// Get collision normal for wall bounce
+function getCollisionNormal(bullet, wall) {
+  // Calculate bullet's previous position
+  const prevX = bullet.x - Math.sin(bullet.angle) * bulletSpeed;
+  const prevY = bullet.y - Math.cos(bullet.angle) * bulletSpeed;
+
+  // Check which wall edge was hit
+  const hitTop = prevY <= wall.y && bullet.y >= wall.y;
+  const hitBottom = prevY >= wall.y + wall.height && bullet.y <= wall.y + wall.height;
+  const hitLeft = prevX <= wall.x && bullet.x >= wall.x;
+  const hitRight = prevX >= wall.x + wall.width && bullet.x <= wall.x + wall.width;
+
+  if (hitTop || hitBottom) {
+      return { nx: 0, ny: hitTop ? -1 : 1 }; // Reflect vertically
+  }
+  if (hitLeft || hitRight) {
+      return { nx: hitLeft ? -1 : 1, ny: 0 }; // Reflect horizontally
+  }
+
+  return { nx: 0, ny: 0 }; // No collision detected (fallback)
 }
 
 // Socket connection
 io.on('connection', (socket) => {
   console.log('New player connected:', socket.id);
-  
-  // Create a new tank for the player
-  const colors = ['#ffcc00', '#3399ff', '#ff3366', '#33cc33', '#9933ff'];
-  const colorIndex = Object.keys(gameState.tanks).length % colors.length;
   
   // Assign spawn positions based on player count
   let spawnX, spawnY, spawnAngle;
@@ -128,36 +166,43 @@ io.on('connection', (socket) => {
       break;
   }
   
-  // Create new tank
-  gameState.tanks[socket.id] = {
-    id: socket.id,
-    x: spawnX,
-    y: spawnY,
-    width: tankWidth,
-    height: tankHeight,
-    angle: spawnAngle,
-    color: colors[colorIndex],
-    cooldown: 0,
-    score: 0,
-    inputs: {
-      up: false,
-      down: false,
-      left: false,
-      right: false,
-      fire: false
-    }
-  };
+  // Send available colors to the client
+  socket.emit('availableColors', availableColors);
   
-  // Send initial game state to the new player
-  socket.emit('gameInit', {
-    id: socket.id,
-    gameState: gameState
-  });
-  
-  // Broadcast new player to all other players
-  socket.broadcast.emit('playerJoined', {
-    id: socket.id,
-    tank: gameState.tanks[socket.id]
+  // Handle player join with color choice
+  socket.on('playerJoin', (data) => {
+    // Create new tank with player's chosen color
+    gameState.tanks[socket.id] = {
+      id: socket.id,
+      x: spawnX,
+      y: spawnY,
+      width: tankWidth,
+      height: tankHeight,
+      angle: spawnAngle,
+      color: data.color || availableColors[0], // Default to first color if none chosen
+      name: data.name || 'Player',
+      cooldown: 0,
+      score: 0,
+      inputs: {
+        up: false,
+        down: false,
+        left: false,
+        right: false,
+        fire: false
+      }
+    };
+    
+    // Send initial game state to the new player
+    socket.emit('gameInit', {
+      id: socket.id,
+      gameState: gameState
+    });
+    
+    // Broadcast new player to all other players
+    socket.broadcast.emit('playerJoined', {
+      id: socket.id,
+      tank: gameState.tanks[socket.id]
+    });
   });
   
   // Handle player inputs
@@ -220,7 +265,9 @@ setInterval(() => {
         angle: tank.angle,
         life: bulletLifetime,
         color: tank.color,
-        owner: tank.id
+        owner: tank.id,
+        bounceCount: 0, // Track number of bounces
+        canHitOwner: false // Initially can't hit owner, set to true after first bounce
       });
       
       tank.cooldown = bulletCooldown;
@@ -231,80 +278,117 @@ setInterval(() => {
     }
   });
   
-  // Update bullets - create a copy of the bullets array to safely modify
-  const bullets = [...gameState.bullets];
-  gameState.bullets = [];
+  // Update bullets
+  const updatedBullets = [];
   
-  for (let i = 0; i < bullets.length; i++) {
-    const bullet = bullets[i];
+  for (const bullet of gameState.bullets) {
+    // Skip expired bullets
+    if (bullet.life <= 0) {
+      continue;
+    }
     
-    if (!bullet) continue; // Skip if bullet is undefined
-    
-    // Update bullet position
+    // Calculate new position
     const newBulletX = bullet.x + Math.sin(bullet.angle) * bulletSpeed;
     const newBulletY = bullet.y - Math.cos(bullet.angle) * bulletSpeed;
+    
+    // Save old position before updating
+    const oldX = bullet.x;
+    const oldY = bullet.y;
+    
+    // Update bullet position
     bullet.x = newBulletX;
     bullet.y = newBulletY;
     bullet.life--;
     
-    // Check collision with walls
-    let collided = false;
-    for (const wall of gameState.walls) {
-      if (pointInRect(bullet.x, bullet.y, wall)) {
-        collided = true;
+    // Check for collisions with walls
+    const hitWall = checkBulletWallCollision(bullet);
+    
+    if (hitWall && bullet.bounceCount < bulletMaxBounces) {
+      // Get collision normal
+      const normal = getCollisionNormal(bullet, hitWall);
+      
+      // Reflect bullet angle based on normal
+      if (normal.nx !== 0) { // Horizontal normal (vertical wall)
+        bullet.angle = Math.PI - bullet.angle;
+      } else { // Vertical normal (horizontal wall)
+        bullet.angle = -bullet.angle;
+      }
+      
+      // Normalize angle to [0, 2π)
+      bullet.angle = (bullet.angle + 2 * Math.PI) % (2 * Math.PI);
+      
+      // Move bullet away from wall to prevent getting stuck
+      bullet.x = oldX; // Restore old position first
+      bullet.y = oldY;
+      
+      // Then move in new direction with offset
+      bullet.x += Math.sin(bullet.angle) * (bulletSpeed + bulletOffset);
+      bullet.y -= Math.cos(bullet.angle) * (bulletSpeed + bulletOffset);
+      
+      bullet.bounceCount++;
+      bullet.canHitOwner = true; // After bounce, bullet can hit its owner
+      
+      // Continue to next bullet, skipping tank collision check
+      updatedBullets.push(bullet);
+      continue;
+    }
+    
+    // Skip further checks if the bullet hit wall but couldn't bounce
+    if (hitWall) {
+      continue;
+    }
+    
+    // Check collision with tanks
+    let tankHit = false;
+    for (const [id, tank] of Object.entries(gameState.tanks)) {
+      // Skip owner check if the bullet can't hit owner yet
+      if (bullet.owner === id && !bullet.canHitOwner) {
+        continue;
+      }
+      
+      const tankRect = {
+        x: tank.x - tank.width / 2,
+        y: tank.y - tank.height / 2,
+        width: tank.width,
+        height: tank.height
+      };
+      
+      if (bulletCollidesWith(bullet, tankRect)) {
+        // Tank hit
+        if (gameState.tanks[bullet.owner] && bullet.owner !== id) {
+          gameState.tanks[bullet.owner].score++;
+        }
+        
+        // Reset tank position
+        let validPosition = false;
+        let attempts = 0;
+        
+        while (!validPosition && attempts < 10) {
+          tank.x = 100 + Math.random() * 600;
+          tank.y = 100 + Math.random() * 400;
+          validPosition = canMoveToPosition(tank, tank.x, tank.y);
+          attempts++;
+        }
+        
+        // If couldn't find a position after 10 attempts, use a fixed position
+        if (!validPosition) {
+          tank.x = 400;
+          tank.y = 300;
+        }
+        
+        tankHit = true;
         break;
       }
     }
     
-    // Check collision with tanks
-    for (const [id, tank] of Object.entries(gameState.tanks)) {
-      if (bullet.owner !== id) { // Don't collide with owner
-        const tankRect = {
-          x: tank.x - tank.width / 2,
-          y: tank.y - tank.height / 2,
-          width: tank.width,
-          height: tank.height
-        };
-        
-        if (pointInRect(bullet.x, bullet.y, tankRect)) {
-          // Tank hit
-          if (gameState.tanks[bullet.owner]) {
-            gameState.tanks[bullet.owner].score++;
-          }
-          
-          // Reset tank position
-          tank.x = 100 + Math.random() * 600;
-          tank.y = 100 + Math.random() * 400;
-          
-          // Find a valid spawn position
-          let validPosition = false;
-          let attempts = 0;
-          while (!validPosition && attempts < 10) {
-            tank.x = 100 + Math.random() * 600;
-            tank.y = 100 + Math.random() * 400;
-            validPosition = canMoveToPosition(tank, tank.x, tank.y);
-            attempts++;
-          }
-          
-          // If couldn't find a position after 10 attempts, use a fixed position
-          if (!validPosition) {
-            tank.x = 400;
-            tank.y = 300;
-          }
-          
-          // Clear bullets (safely)
-          gameState.bullets = [];
-          collided = true;
-          break;
-        }
-      }
-    }
-    
-    // Keep bullet if it hasn't collided or expired
-    if (!collided && bullet.life > 0) {
-      gameState.bullets.push(bullet);
+    // Keep bullet if it hasn't hit anything and hasn't expired
+    if (!tankHit && !hitWall && bullet.life > 0) {
+      updatedBullets.push(bullet);
     }
   }
+  
+  // Update the gameState with the filtered bullets
+  gameState.bullets = updatedBullets;
   
   // Send updated game state to all players
   io.emit('gameUpdate', gameState);
