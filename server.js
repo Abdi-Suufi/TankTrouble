@@ -231,12 +231,20 @@ setInterval(() => {
     }
   });
   
-  // Update bullets
-  for (let i = gameState.bullets.length - 1; i >= 0; i--) {
-    const bullet = gameState.bullets[i];
+  // Update bullets - create a copy of the bullets array to safely modify
+  const bullets = [...gameState.bullets];
+  gameState.bullets = [];
+  
+  for (let i = 0; i < bullets.length; i++) {
+    const bullet = bullets[i];
     
-    bullet.x += Math.sin(bullet.angle) * bulletSpeed;
-    bullet.y -= Math.cos(bullet.angle) * bulletSpeed;
+    if (!bullet) continue; // Skip if bullet is undefined
+    
+    // Update bullet position
+    const newBulletX = bullet.x + Math.sin(bullet.angle) * bulletSpeed;
+    const newBulletY = bullet.y - Math.cos(bullet.angle) * bulletSpeed;
+    bullet.x = newBulletX;
+    bullet.y = newBulletY;
     bullet.life--;
     
     // Check collision with walls
@@ -270,22 +278,31 @@ setInterval(() => {
           
           // Find a valid spawn position
           let validPosition = false;
-          while (!validPosition) {
+          let attempts = 0;
+          while (!validPosition && attempts < 10) {
             tank.x = 100 + Math.random() * 600;
             tank.y = 100 + Math.random() * 400;
             validPosition = canMoveToPosition(tank, tank.x, tank.y);
+            attempts++;
           }
           
-          gameState.bullets = []; // Clear all bullets
+          // If couldn't find a position after 10 attempts, use a fixed position
+          if (!validPosition) {
+            tank.x = 400;
+            tank.y = 300;
+          }
+          
+          // Clear bullets (safely)
+          gameState.bullets = [];
           collided = true;
           break;
         }
       }
     }
     
-    // Remove bullet if it collided or expired
-    if (collided || bullet.life <= 0) {
-      gameState.bullets.splice(i, 1);
+    // Keep bullet if it hasn't collided or expired
+    if (!collided && bullet.life > 0) {
+      gameState.bullets.push(bullet);
     }
   }
   
