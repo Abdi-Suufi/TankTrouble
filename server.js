@@ -62,7 +62,7 @@ const bulletRadius = 3;
 const bulletLifetime = 180;
 const bulletCooldown = 30;
 const bulletMaxBounces = 3; // Maximum number of bounces before bullet disappears
-const bulletOffset = bulletRadius + 2; // Offset to avoid bullet getting stuck in walls
+const bulletOffset = bulletRadius + 3; // Offset to avoid bullet getting stuck in walls
 
 // Helper functions
 function canMoveToPosition(tank, newX, newY) {
@@ -102,7 +102,8 @@ function bulletCollidesWith(bullet, rect) {
   const distY = bullet.y - closestY;
   
   // If the distance is less than the circle's radius, there's a collision
-  return (distX * distX + distY * distY) <= (bulletRadius * bulletRadius);
+  const distanceSquared = distX * distX + distY * distY;
+  return distanceSquared <= (bulletRadius * bulletRadius);
 }
 
 // Improved wall collision detection for bullets
@@ -117,24 +118,25 @@ function checkBulletWallCollision(bullet) {
 
 // Get collision normal for wall bounce
 function getCollisionNormal(bullet, wall) {
-  // Calculate bullet's previous position
-  const prevX = bullet.x - Math.sin(bullet.angle) * bulletSpeed;
-  const prevY = bullet.y - Math.cos(bullet.angle) * bulletSpeed;
-
-  // Check which wall edge was hit
-  const hitTop = prevY <= wall.y && bullet.y >= wall.y;
-  const hitBottom = prevY >= wall.y + wall.height && bullet.y <= wall.y + wall.height;
-  const hitLeft = prevX <= wall.x && bullet.x >= wall.x;
-  const hitRight = prevX >= wall.x + wall.width && bullet.x <= wall.x + wall.width;
-
-  if (hitTop || hitBottom) {
-      return { nx: 0, ny: hitTop ? -1 : 1 }; // Reflect vertically
+  // Find the closest point on the wall to the bullet
+  const closestX = Math.max(wall.x, Math.min(bullet.x, wall.x + wall.width));
+  const closestY = Math.max(wall.y, Math.min(bullet.y, wall.y + wall.height));
+  
+  // Calculate the normal vector from the wall to the bullet
+  const normalX = bullet.x - closestX;
+  const normalY = bullet.y - closestY;
+  
+  // Normalize the normal vector
+  const length = Math.sqrt(normalX * normalX + normalY * normalY);
+  if (length === 0) {
+    // If bullet is exactly on the wall, use a default normal
+    return { nx: 1, ny: 0 };
   }
-  if (hitLeft || hitRight) {
-      return { nx: hitLeft ? -1 : 1, ny: 0 }; // Reflect horizontally
-  }
-
-  return { nx: 0, ny: 0 }; // No collision detected (fallback)
+  
+  return { 
+    nx: normalX / length, 
+    ny: normalY / length 
+  };
 }
 
 // Socket connection
@@ -307,12 +309,19 @@ setInterval(() => {
       // Get collision normal
       const normal = getCollisionNormal(bullet, hitWall);
       
-      // Reflect bullet angle based on normal
-      if (normal.nx !== 0) { // Horizontal normal (vertical wall)
-        bullet.angle = Math.PI - bullet.angle;
-      } else { // Vertical normal (horizontal wall)
-        bullet.angle = -bullet.angle;
-      }
+      // Calculate the velocity vector
+      const velocityX = Math.sin(bullet.angle) * bulletSpeed;
+      const velocityY = -Math.cos(bullet.angle) * bulletSpeed;
+      
+      // Calculate the dot product of velocity and normal
+      const dotProduct = velocityX * normal.nx + velocityY * normal.ny;
+      
+      // Calculate the reflected velocity using the reflection formula: v' = v - 2(v·n)n
+      const reflectedVelocityX = velocityX - 2 * dotProduct * normal.nx;
+      const reflectedVelocityY = velocityY - 2 * dotProduct * normal.ny;
+      
+      // Calculate the new angle from the reflected velocity
+      bullet.angle = Math.atan2(reflectedVelocityX, -reflectedVelocityY);
       
       // Normalize angle to [0, 2π)
       bullet.angle = (bullet.angle + 2 * Math.PI) % (2 * Math.PI);
